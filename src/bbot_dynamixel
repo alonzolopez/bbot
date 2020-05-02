@@ -24,7 +24,7 @@ class BBotDynamixel(object):
 		rospy.loginfo('Action server started')
 
 		self.m1min = 100	# motor min
-		self.m1max = 100000	# motor max
+		self.m1max = 4000	# motor max
 		self.m2min = 100	# motor min
 		self.m2max = 4000	# motor max
 		self.m3min = 100	# motor min
@@ -37,18 +37,24 @@ class BBotDynamixel(object):
 		self.m6max = 4000	# motor max
 		self.m7min = 100	# motor min
 		self.m7max = 4000	# motor max
-		self.minmotorcmds = [self.m1min, self.m2min, self.m3min, self.m4min, self.m5min, self.m6min]
-		self.maxmotorcmds = [self.m1max, self.m2max, self.m3max, self.m4max, self.m5max, self.m6max]
+		self.minmotorcmds = [self.m1min, self.m2min, self.m3min, self.m4min, self.m5min, self.m6min, self.m7min]
+		self.maxmotorcmds = [self.m1max, self.m2max, self.m3max, self.m4max, self.m5max, self.m6max, self.m7max]
+		self.velocitylimits = []
+		self.velocityprofile = [30, 30, 30, 30, 30, 30, 60]
 
 		self.statepub = rospy.Publisher('/bbot/jointStates', RobotState, queue_size = 1)		# initialize state publisher
 		# self.rospy.init_node('bbotdynamixel', anonymous = True)
 		rospy.on_shutdown(self.shutdownMotors)
 
 		# Control table address
-		self.ADDR_PRO_TORQUE_ENABLE      = 64               # Control table address is different in Dynamixel model
+		self.ADDR_PRO_TORQUE_ENABLE      = 64               # addresses defined in Protocol 2.0 documentation http://emanual.robotis.com/docs/en/dxl/mx/mx-28-2/
 		self.ADDR_PRO_GOAL_POSITION      = 116
 		self.ADDR_PRO_PRESENT_POSITION   = 132
 		self.ADDR_OPERATING_MODE 		= 11 
+		self.ADDR_GOAL_VELOCITY			= 104
+		self.ADDR_VELOCITY_LIMIT		= 44
+		self.ADDR_PROFILE_VELOCITY 		= 112
+		self.ADDR_PROFILE_ACCELERATION 	= 108
 
 
 		# Data Byte Length
@@ -58,7 +64,7 @@ class BBotDynamixel(object):
 		# Protocol version
 		self.PROTOCOL_VERSION            = 2.0				# See which protocol version is used in the Dynamixel
 
-		self.idlist = [1, 2, 3, 4, 5, 6]					# list of motor ids. must represent current motors connected for script to work
+		self.idlist = [1, 2, 3, 4, 5, 6, 7]					# list of motor ids. must represent current motors connected for script to work
 
 		self.BAUDRATE                    = 57600			# Dynamixel default baudrate : 57600
 		self.DEVICENAME                  = '/dev/ttyUSB0'	# Check which port is being used on your controller
@@ -101,16 +107,106 @@ class BBotDynamixel(object):
 		else:
 			rospy.loginfo("Failed to change the baudrate")
 			quit()
-		self.setExtendedPositionControl(self.idlist[0])	# set motor 1 to extended position control
+		# self.setExtendedPositionControl(self.idlist[0])	# set motor 1 to extended position control
 		self.setup()
+		self.velocitylimits = self.readVelocityLimits() # motors come with max velocity 230 on a scale [0, 1023]
+		rospy.loginfo("Velocity Limits: " + str(self.velocitylimits))
+		rospy.loginfo("Goal Velocities: " + str(self.readGoalVelocity()))
+		rospy.loginfo("Profile Acclerations: " + str(self.readProfileAcceleration()))
+		rospy.loginfo("Profile Velocities: " + str(self.readProfileVelocity()))
+		self.setProfileVelocity(self.velocityprofile)
+		rospy.loginfo("Profile Velocities: " + str(self.readProfileVelocity()))
 		self.state = RobotState()	# initialize the state variable as RobotState msg type
 		self.updateStateFeedback()	# reads the present motor positions and publishes them
+		
 		
 		# self.statepubperiod = 10
 		rospy.Timer(rospy.Duration(0.5), self.timercallback)
 		rospy.loginfo("Robot successfully created")
 
 
+	def readVelocityLimits(self):
+		# Read maximum velocity for each motor in self.idlist
+		maxvels = []
+		for motor in self.idlist:
+			dxl_max_vel, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(self.portHandler, motor, self.ADDR_VELOCITY_LIMIT)
+			if dxl_comm_result != COMM_SUCCESS:
+				print("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				print("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			maxvels.append(dxl_max_vel)
+		return maxvels
+	def readGoalVelocity(self):
+		goalvels = []
+		for motor in self.idlist:
+			dxl_goal_vel, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(self.portHandler, motor, self.ADDR_GOAL_VELOCITY)
+			if dxl_comm_result != COMM_SUCCESS:
+				print("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				print("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			goalvels.append(dxl_goal_vel)
+		return goalvels
+
+	def readProfileVelocity(self):
+		profilevels = []
+		for motor in self.idlist:
+			dxl_profile_vel, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(self.portHandler, motor, self.ADDR_PROFILE_VELOCITY)
+			if dxl_comm_result != COMM_SUCCESS:
+				print("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				print("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			profilevels.append(dxl_profile_vel)
+		return profilevels
+
+	def readProfileAcceleration(self):
+		profileaccels = []
+		for motor in self.idlist:
+			dxl_profile_accel, dxl_comm_result, dxl_error = self.packetHandler.read4ByteTxRx(self.portHandler, motor, self.ADDR_PROFILE_ACCELERATION)
+			if dxl_comm_result != COMM_SUCCESS:
+				print("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				print("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			profileaccels.append(dxl_profile_accel)
+		return profileaccels
+
+	def setProfileVelocity(self, profilevel):
+		rospy.loginfo("Setting profile velocity")
+		for index in range(len(self.idlist)):
+			dxl_comm_result, dxl_error = self.packetHandler.write4ByteTxRx(self.portHandler, self.idlist[index], self.ADDR_PROFILE_VELOCITY, profilevel[index])
+			if dxl_comm_result != COMM_SUCCESS:
+				rospy.loginfo("dxl_comm_result != COMM_SUCCESS. Failed to set goal velocity :(")
+				rospy.loginfo("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				rospy.loginfo("dxl_error != 0")
+				rospy.loginfo("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			else:
+				rospy.loginfo("Profile velocity set for motor ID " + str(self.idlist[index]) + " at profile_velocity = " + str(profilevel[index]))
+
+	def setProfileAcceleration(self, profileaccel):
+		rospy.loginfo("Setting profile acceleration")
+		for motorid in self.idlist:
+			dxl_comm_result, dxl_error = self.packetHandler.write4ByteTxRx(self.portHandler, motorid, self.ADDR_PROFILE_ACCELERATION, profileaccel)
+			if dxl_comm_result != COMM_SUCCESS:
+				rospy.loginfo("dxl_comm_result != COMM_SUCCESS. Failed to set goal velocity :(")
+				rospy.loginfo("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				rospy.loginfo("dxl_error != 0")
+				rospy.loginfo("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			else:
+				rospy.loginfo("Profile velocity set for motor ID " + str(motorid) + " at profile_velocity = " + str(profileaccel))
+
+	def setGoalVelocity(self, goalvel):
+		rospy.loginfo("Setting goal velocity")
+		for motorid in self.idlist:
+			dxl_comm_result, dxl_error = self.packetHandler.write4ByteTxRx(self.portHandler, motorid, self.ADDR_GOAL_VELOCITY, goalvel)
+			if dxl_comm_result != COMM_SUCCESS:
+				rospy.loginfo("dxl_comm_result != COMM_SUCCESS. Failed to set goal velocity :(")
+				rospy.loginfo("%s" % self.packetHandler.getTxRxResult(dxl_comm_result))
+			elif dxl_error != 0:
+				rospy.loginfo("dxl_error != 0")
+				rospy.loginfo("%s" % self.packetHandler.getRxPacketError(dxl_error))
+			else:
+				rospy.loginfo("Goal velocity set for motor ID " + str(motorid) + " at goal_velocity = " + str(goalvel))
 
 	def setExtendedPositionControl(self, motorid):
 		# Set operating mode to extended position control mode
@@ -266,9 +362,9 @@ class BBotDynamixel(object):
 			rospy.sleep(waypoint.time_from_start) # sleeps for duration attached to the waypoint
 		if success:
 			self.result.complete = True
+			self.actionlock = False
 			rospy.loginfo('Succeeded. Completed trajectory')
 			self.server.set_succeeded(self.result)
-			# self.run()
 		self.actionlock = False
 
 	def run(self):
@@ -285,7 +381,3 @@ if __name__=='__main__':
 	rospy.init_node('bbot_server')
 	bbot = BBotDynamixel()
 	rospy.spin()
-	# try:
-	# 	bbot.run()
-	# except rospy.ROSInterruptException:
-	# 	pass
